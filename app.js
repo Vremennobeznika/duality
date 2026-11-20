@@ -1,0 +1,56 @@
+import {emptyState,normalize,uid,addTask,toggleTask,removeTask,addEvent,removeEvent,editTask,addStage,toggleStage,editEvent} from './model.mjs';
+const $=id=>document.getElementById(id);
+const KEY='duo-state-v1',LOG='duo-history-v1',DIRTY='duo-unsynced-v1',SESSION='duo-session-v1',API=String(window.DUO_CONFIG?.apiUrl||'').replace(/\/$/,'');
+let state,revision=0,session=sessionStorage.getItem(SESSION)||'',user='one',person='one',view='tasks',dirty=localStorage.getItem(DIRTY)==='yes',busy=false,history=[];
+try{state=normalize(JSON.parse(localStorage.getItem(KEY)||'null'))}catch{state=emptyState()}
+try{history=JSON.parse(localStorage.getItem(LOG)||'[]');if(!Array.isArray(history))history=[]}catch{history=[]}
+const THEME_KEY='duo-theme-v1';
+const themeIcon=light=>light?'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.5 1.5m9.8 9.8 1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5"/><circle cx="12" cy="12" r="4"/></svg>':'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14a8.5 8.5 0 0 1-10.5-10.5A8.5 8.5 0 1 0 20.5 14Z"/></svg>';
+function applyTheme(theme){const light=theme==='light';document.documentElement.dataset.theme=light?'light':'dark';const button=$('themeToggle');button.innerHTML=themeIcon(light)+(light?' Тёмная тема':' Светлая тема');button.setAttribute('aria-label',light?'Включить тёмную тему':'Включить светлую тему');button.setAttribute('aria-pressed',String(light));document.querySelector('#themeColor').content=light?'#f3f5f9':'#111317'}
+$('themeToggle').onclick=()=>{const theme=document.documentElement.dataset.theme==='light'?'dark':'light';applyTheme(theme);try{localStorage.setItem(THEME_KEY,theme)}catch{status('Тема изменена, но браузер не разрешил сохранить выбор.',true)}};
+applyTheme(document.documentElement.dataset.theme==='light'?'light':'dark');
+const status=(message,error=false)=>{$('status').textContent=message;$('status').style.color=error?'var(--danger)':'var(--success)'};
+const saveLocal=()=>{try{localStorage.setItem(KEY,JSON.stringify(state));return true}catch{status('Нет доступа к хранилищу браузера. Скачайте резервную копию.',true);return false}};
+const logLocal=desc=>{history.unshift({time:new Date().toISOString(),description:desc});history=history.slice(0,100);try{localStorage.setItem(LOG,JSON.stringify(history))}catch{}};
+async function api(action,body={},token=session){
+ if(!API)throw Error('Сервер не настроен');
+ const res=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json',...(token?{'Authorization':'Bearer '+token}:{})},body:JSON.stringify({action,...body}),cache:'no-store'});
+ const json=await res.json().catch(()=>({error:'Сервер вернул некорректный ответ'}));
+ if(!res.ok){const e=Error(json.error||`Ошибка HTTP ${res.status}`);e.status=res.status;throw e}return json;
+}
+function show(v){view=v;for(const name of ['tasks','calendar','settings','history']){$(name+'View').hidden=name!==v;$('show'+name[0].toUpperCase()+name.slice(1)).classList.toggle('active',name===v)}render()}
+function el(tag,text,className){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(className)e.className=className;return e}
+function taskRow(t){
+ const li=el('li');if(t.done)li.classList.add('done');const wrap=el('div');
+ const line=el('div',undefined,'taskInline');const box=document.createElement('input');box.type='checkbox';box.checked=t.done;box.setAttribute('aria-label','Выполнено: '+t.text);box.onchange=()=>change(toggleTask(state,person,t.id),'Изменён статус задачи');line.append(box,el('span',t.text));wrap.append(line);
+ for(const st of t.stages||[]){const step=el('div',undefined,'taskInline stage');const cb=document.createElement('input');cb.type='checkbox';cb.checked=st.done;cb.setAttribute('aria-label','Этап: '+st.text);cb.onchange=()=>change(toggleStage(state,person,t.id,st.id),'Изменён этап задачи');step.append(cb,el('span',st.text));wrap.append(step)}
+ const actions=el('div',undefined,'taskButtons');const edit=el('button','Изменить');edit.type='button';edit.onclick=()=>{const v=prompt('Название задачи',t.text);if(v!==null){try{change(editTask(state,person,t.id,v),'Задача изменена')}catch(e){status(e.message,true)}}};
+ const stage=el('button','+ Этап');stage.type='button';stage.onclick=()=>{const v=prompt('Название этапа');if(v!==null){try{change(addStage(state,person,t.id,v),'Добавлен этап')}catch(e){status(e.message,true)}}};
+ const rm=el('button','Удалить');rm.type='button';rm.setAttribute('aria-label','Удалить задачу: '+t.text);rm.onclick=()=>{if(confirm('Удалить задачу?'))change(removeTask(state,person,t.id),'Задача удалена')};
+ actions.append(edit,stage,rm);li.append(wrap,actions);return li
+}
+
+function render(){
+ $('personOne').textContent=state.people[0];$('personTwo').textContent=state.people[1];$('personOne').classList.toggle('selected',person==='one');$('personTwo').classList.toggle('selected',person==='two');
+ const list=$('tasksList');list.replaceChildren();for(const task of state.tasks[person])list.append(taskRow(task));if(!state.tasks[person].length)list.append(el('li','Пока нет задач.'));
+ const events=$('eventsList');events.replaceChildren();const sorted=[...state.events].sort((a,b)=>a.date.localeCompare(b.date));for(const e of sorted){const li=el('li');const a=el('div');a.append(el('div',e.date+' · '+e.title));if(e.note)a.append(el('div',e.note,'small'));const actions=el('div',undefined,'taskButtons');const edit=el('button','Изменить');edit.type='button';edit.onclick=()=>{const title=prompt('Название события',e.title);if(title===null)return;const date=prompt('Дата ГГГГ-ММ-ДД',e.date);if(date===null)return;const note=prompt('Заметка',e.note);if(note===null)return;try{change(editEvent(state,e.id,date,title,note),'Событие изменено')}catch(ex){status(ex.message,true)}};const rm=el('button','Удалить');rm.type='button';rm.onclick=()=>{if(confirm('Удалить событие?'))change(removeEvent(state,e.id),'Событие удалено')};actions.append(edit,rm);li.append(a,actions);events.append(li)}if(!sorted.length)events.append(el('li','Пока нет событий.'));
+ $('nameOne').value=state.people[0];$('nameTwo').value=state.people[1];
+ if(view==='history'){const log=$('historyList');log.replaceChildren();for(const entry of history){const li=el('li');const div=el('div');div.append(el('div',entry.description));div.append(el('div',new Date(entry.time).toLocaleString('ru-RU'),'small'));li.append(div);log.append(li)}if(!history.length)log.append(el('li','Записей пока нет.'))}
+}
+function change(next,desc){state=normalize(next);dirty=true;try{localStorage.setItem(DIRTY,'yes')}catch{}if(!saveLocal())return;logLocal(desc);render();status('Сохранено на устройстве'+(API?'. Синхронизирую…':''));if(API)void sync()}
+async function sync(){if(!API||!session||busy||!dirty)return;busy=true;try{const r=await api('save',{revision,state});revision=r.revision;dirty=false;localStorage.removeItem(DIRTY);status('Синхронизировано с сервером')}catch(e){if(e.status===409){status('Конфликт: данные на сервере изменились. Скачайте JSON, затем нажмите «Проверить синхронизацию» и решите, какую версию сохранить.',true)}else status('Локальная копия сохранена. Ошибка связи: '+e.message,true)}finally{busy=false}}
+async function refresh(){if(!API||!session)return;try{const r=await api('read');if(dirty){status('Есть локальные изменения. Скачайте JSON перед загрузкой версии сервера. Данные не перезаписаны.',true);return}state=normalize(r.state);revision=r.revision;dirty=false;localStorage.removeItem(DIRTY);saveLocal();history=(r.history||[]).map(x=>({time:x.created_at,description:x.description}));render();status('Получена последняя версия с сервера')}catch(e){status('Ошибка загрузки: '+e.message,true);if(e.status===401)logout()}}
+function logout(){session='';sessionStorage.removeItem(SESSION);start()}
+function start(){const logged=!API||Boolean(session);$('loginView').hidden=logged;$('app').hidden=!logged;$('logout').hidden=!API||!session;$('warning').textContent=API?'Режим синхронизации. Данные защищены паролями участников; не публикуйте резервные копии.':'Локальный режим: данные хранятся только в этом браузере. Для двух устройств настройте собственный сервер по README.';if(logged){show('tasks');$('passwordBox').hidden=!API;if(API)void refresh()}}
+$('showTasks').onclick=()=>show('tasks');$('showCalendar').onclick=()=>show('calendar');$('showSettings').onclick=()=>show('settings');$('showHistory').onclick=()=>{show('history');if(API&&!dirty)void refresh()};$('logout').onclick=logout;
+$('personOne').onclick=()=>{person='one';render()};$('personTwo').onclick=()=>{person='two';render()};
+$('taskForm').onsubmit=e=>{e.preventDefault();try{change(addTask(state,person,$('taskInput').value,uid()),'Добавлена задача');$('taskInput').value=''}catch(ex){status(ex.message,true)}};
+$('eventForm').onsubmit=e=>{e.preventDefault();try{change(addEvent(state,$('eventDate').value,$('eventTitle').value,$('eventNote').value,uid()),'Добавлено событие');$('eventTitle').value='';$('eventNote').value=''}catch(ex){status(ex.message,true)}};
+$('namesForm').onsubmit=e=>{e.preventDefault();const next=JSON.parse(JSON.stringify(state));next.people=[$('nameOne').value,$('nameTwo').value];change(next,'Изменены названия участников');status('Названия сохранены')};
+$('export').onclick=()=>{const blob=new Blob([JSON.stringify({revision,state},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='duo-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+$('import').onchange=async e=>{const file=e.target.files?.[0];if(!file)return;try{if(file.size>300000)throw Error('Файл слишком большой');const json=JSON.parse(await file.text());const next=normalize(json.state||json);if(!confirm('Заменить текущие локальные данные импортированными? Сначала сохраните резервную копию.'))return;change(next,'Импорт резервной копии')}catch(ex){status('Ошибка импорта: '+ex.message,true)}finally{e.target.value=''}};
+$('syncNow').onclick=()=>{if(!API||!session){status('Сервер не настроен',true);return}if(!dirty){status('Нет несинхронизированных данных');return}void sync()};
+$('refresh').onclick=async()=>{if(!API){status('Сначала подключите собственный сервер по README');return}if(dirty){if(!confirm('Есть несинхронизированные изменения. Заменить их серверной версией? Сначала скачайте резервную копию.'))return;dirty=false;localStorage.removeItem(DIRTY)}await refresh()};
+$('loginForm').onsubmit=async e=>{e.preventDefault();try{const data=await api('login',{user:$('loginUser').value,password:$('loginPassword').value},'');user=$('loginUser').value;session=data.token;sessionStorage.setItem(SESSION,session);$('loginPassword').value='';start();status('Вход выполнен')}catch(ex){status(ex.message,true)}};
+$('passwordForm').onsubmit=async e=>{e.preventDefault();try{const r=await api('password',{current:$('currentPass').value,next:$('newPass').value});session=r.token;sessionStorage.setItem(SESSION,session);$('passwordForm').reset();status('Пароль изменён. Старые сеансы этого профиля отозваны.')}catch(ex){status(ex.message,true)}};
+window.addEventListener('online',()=>{if(dirty)void sync()});$('eventDate').value=new Date().toISOString().slice(0,10);start();
