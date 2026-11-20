@@ -62,8 +62,9 @@ Deno.serve(async req=>{
    if(!Number.isSafeInteger(data.revision)||data.revision<0||!validState(data.state))return response({error:'Некорректные данные'},400);
    const result=await db('duo_state?id=eq.1&revision=eq.'+data.revision,{method:'PATCH',headers:{'Content-Type':'application/json','Prefer':'return=representation'},body:JSON.stringify({revision:data.revision+1,data:data.state,updated_at:new Date().toISOString()})});
    if(result.length!==1)return response({error:'Конфликт версий. Сохраните копию и обновите данные.'},409);
-   await db('duo_history',{method:'POST',headers:{'Content-Type':'application/json','Prefer':'return=representation'},body:JSON.stringify({revision:data.revision+1,description:'Изменения сохранены: '+(user==='one'?'Участник 1':'Участник 2')})});
-   return response({revision:data.revision+1});
+   let historyWarning=false;
+   try{await db('duo_history',{method:'POST',headers:{'Content-Type':'application/json','Prefer':'return=representation'},body:JSON.stringify({revision:data.revision+1,description:'Изменения сохранены: '+(user==='one'?'Участник 1':'Участник 2')})})}catch(e){historyWarning=true;console.error('History insert failed after successful save:',String(e))}
+   return response({revision:data.revision+1,historyWarning});
   }
   if(data.action==='password'){
    const cur=String(data.current||''),next=String(data.next||'');
